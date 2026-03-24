@@ -187,7 +187,10 @@ class MockVlmLocalizer(VlmLocalizer):
 
 
 def build_localizer() -> VlmLocalizer:
-    live_localizer = Florence2PhraseGrounder.from_env()
-    if live_localizer is not None:
-        return live_localizer
-    return MockVlmLocalizer()
+    localizer = Florence2PhraseGrounder.from_env()
+    if localizer is None:
+        raise GroundingError(
+            "Florence-2 is disabled via environment (AGENT_BANANA_DISABLE_VLM=1). "
+            "Remove this flag to enable grounding."
+        )
+    return localizer
