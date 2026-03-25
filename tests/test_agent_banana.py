@@ -13,10 +13,11 @@ sys.path.insert(0, str(ROOT / "src"))
 from agent_banana.memory import ContextFolder  # noqa: E402
 from agent_banana.models import BoundingBox, GroundingCandidate  # noqa: E402
 from agent_banana.nano_banana import MockNanoBananaClient  # noqa: E402
+from agent_banana.llm_grounding_advisor import MockGroundingAdvisor  # noqa: E402
 from agent_banana.pipeline import AgentBananaApp  # noqa: E402
 from agent_banana.planning import RLPlanner, RLValueStore  # noqa: E402
 from agent_banana.quality import QualityJudge  # noqa: E402
-from agent_banana.targeting import classify_target, rank_grounding_candidates, refine_bbox_for_profile  # noqa: E402
+from agent_banana.targeting import bbox_iou, classify_target, rank_grounding_candidates, refine_bbox_for_profile  # noqa: E402
 from agent_banana.vision import assess_preview_framing, decode_image_payload, fit_image_inside_canvas  # noqa: E402
 from agent_banana.vlm_localizer import GroundingResult, MockVlmLocalizer, VlmLocalizer  # noqa: E402
 
@@ -74,6 +75,19 @@ class AgentBananaPlannerTests(unittest.TestCase):
         self.assertEqual(classify_target(edits[0].target, edits[0].verb), "face_accessory")
         self.assertEqual(candidates[0].steps[0].mode, "preview_tight")
 
+    def test_spectacles_color_change_uses_tight_mode(self) -> None:
+        """Verify that 'adjust' verb on spectacles still selects preview_tight."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            planner = RLPlanner(RLValueStore(Path(tmp_dir) / "planner.json"))
+            context = ContextFolder().fold([])
+            edits = planner.parse_instruction(
+                "Change the colour of grandma's spectacles to red.", context
+            )
+            candidates = planner.plan(edits, context)
+
+        self.assertEqual(classify_target(edits[0].target, edits[0].verb), "face_accessory")
+        self.assertEqual(candidates[0].steps[0].mode, "preview_tight")
+
 
 class AgentBananaVisionTests(unittest.TestCase):
     def test_face_accessory_bbox_is_shrunk_from_large_grounding_region(self) -> None:
@@ -84,6 +98,15 @@ class AgentBananaVisionTests(unittest.TestCase):
         self.assertLess(refined.area, raw_bbox.area)
         self.assertLessEqual(refined.width, int(source.size[0] * 0.28))
         self.assertLessEqual(refined.height, int(source.size[1] * 0.14))
+
+    def test_face_accessory_refine_preserves_detected_vertical_position(self) -> None:
+        candidate = BoundingBox(left=90, top=300, right=180, bottom=340)
+        refined = refine_bbox_for_profile(candidate, (480, 640), "face_accessory")
+
+        self.assertEqual(
+            (refined.top + refined.bottom) // 2,
+            (candidate.top + candidate.bottom) // 2,
+        )
 
     def test_grounding_candidate_ranking_prefers_plausible_face_accessory_box(self) -> None:
         image_size = (480, 640)
@@ -105,6 +128,33 @@ class AgentBananaVisionTests(unittest.TestCase):
         ranked = rank_grounding_candidates(candidates, image_size, "face_accessory")
 
         self.assertEqual(ranked[0].bbox.as_tuple(), (88, 82, 180, 132))
+
+    def test_grounding_candidate_ranking_keeps_mid_frame_detection_viable(self) -> None:
+        image_size = (480, 640)
+        candidates = [
+            GroundingCandidate(
+                phrase="spectacles",
+                bbox=BoundingBox(left=100, top=110, right=180, bottom=150),
+                score=0.60,
+                source="phrase-grounding",
+            ),
+            GroundingCandidate(
+                phrase="spectacles",
+                bbox=BoundingBox(left=102, top=320, right=182, bottom=360),
+                score=0.62,
+                source="phrase-grounding",
+            ),
+        ]
+
+        ranked = rank_grounding_candidates(candidates, image_size, "face_accessory")
+
+        self.assertEqual(ranked[0].bbox.as_tuple(), (102, 320, 182, 360))
+
+    def test_bbox_iou_zero_for_disjoint_boxes(self) -> None:
+        a = BoundingBox(left=10, top=10, right=30, bottom=30)
+        b = BoundingBox(left=40, top=40, right=60, bottom=60)
+
+        self.assertEqual(bbox_iou(a, b), 0.0)
 
     def test_preview_framing_assessment_detects_reframed_preview(self) -> None:
         source = make_test_image().resize((480, 640))
@@ -151,7 +201,7 @@ class AgentBananaPipelineTests(unittest.TestCase):
                     )
                 ]
             )
-            app = AgentBananaApp(root=root, image_client=MockNanoBananaClient(), localizer=localizer)
+            app = AgentBananaApp(root=root, image_client=MockNanoBananaClient(), localizer=localizer, grounding_advisor=MockGroundingAdvisor())
             image = make_test_image()
 
             result = app.run(image, "Replace the center fruit with a banana and warm the background.")
@@ -181,7 +231,7 @@ class AgentBananaPipelineTests(unittest.TestCase):
                     )
                 ]
             )
-            app = AgentBananaApp(root=root, image_client=MockNanoBananaClient(), localizer=localizer)
+            app = AgentBananaApp(root=root, image_client=MockNanoBananaClient(), localizer=localizer, grounding_advisor=MockGroundingAdvisor())
             image = make_test_image().resize((480, 640))
             result = app.run(image, "Remove the glasses from the woman.")
 

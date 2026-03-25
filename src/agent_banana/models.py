@@ -187,6 +187,12 @@ class StepResult:
     grounding_phrases: List[str] = field(default_factory=list)
     grounding_candidates: List[GroundingCandidate] = field(default_factory=list)
     localizer_mode: str = ""
+    llm_object_description: str = ""
+    llm_refined_phrases: List[str] = field(default_factory=list)
+    llm_bbox_hint: Optional[Dict] = None
+    llm_confidence: float = 0.0
+    image_width: int = 0
+    image_height: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -200,6 +206,12 @@ class StepResult:
             "grounding_phrases": list(self.grounding_phrases),
             "grounding_candidates": [candidate.to_dict() for candidate in self.grounding_candidates],
             "localizer_mode": self.localizer_mode,
+            "llm_object_description": self.llm_object_description,
+            "llm_refined_phrases": list(self.llm_refined_phrases),
+            "llm_bbox_hint": self.llm_bbox_hint,
+            "llm_confidence": round(self.llm_confidence, 4),
+            "image_width": self.image_width,
+            "image_height": self.image_height,
         }
 
 

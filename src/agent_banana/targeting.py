@@ -23,10 +23,39 @@ def classify_target(target: str, verb: str = "") -> str:
     return "generic_local"
 
 
+def _clean_phrase(phrase: str) -> str:
+    """Strip location/relational suffixes that confuse Florence-2 grounding.
+
+    Examples:
+        "spectacles worn by the grandmother" -> "spectacles"
+        "glasses from the woman's face"      -> "glasses"
+        "hat on the man's head"              -> "hat"
+    """
+    # Remove relational clauses: "worn by ...", "on the ...", "from the ...", "near ...", etc.
+    phrase = re.sub(
+        r"\b(?:worn by|on the|on a|from the|from a|near the|near a|belonging to|attached to|of the|of a)\b.*",
+        "",
+        phrase,
+        flags=re.IGNORECASE,
+    ).strip()
+    # Remove possessive tails: "... 's face", "... 's head"
+    phrase = re.sub(r"\s+'s\b.*", "", phrase, flags=re.IGNORECASE).strip()
+    # Remove trailing stop-words left over
+    phrase = re.sub(r"\s+\b(?:the|a|an|of|on|in|at|by|for|with)\s*$", "", phrase, flags=re.IGNORECASE).strip()
+    return phrase
+
+
 def grounding_phrases_for_target(target: str, modifiers: list[str], verb: str) -> list[str]:
     phrases: list[str] = []
     lowered_target = target.lower().strip()
-    if lowered_target:
+
+    # Always lead with the cleaned, minimal phrase so Florence-2 gets a tight query
+    cleaned = _clean_phrase(lowered_target)
+    if cleaned:
+        phrases.append(cleaned)
+
+    # Also add the raw target as a fallback (after the clean version)
+    if lowered_target and lowered_target != cleaned:
         phrases.append(lowered_target)
 
     if any(keyword in lowered_target for keyword in FACE_ACCESSORY_KEYWORDS):
@@ -42,15 +71,15 @@ def grounding_phrases_for_target(target: str, modifiers: list[str], verb: str) -
 
     if verb == "replace":
         cleaned_target = re.sub(r"\b(?:worn by|on|from|near)\b.*", "", lowered_target).strip()
-        if cleaned_target:
+        if cleaned_target and cleaned_target != cleaned:
             phrases.append(cleaned_target)
 
     for modifier in modifiers:
         if verb == "replace" and modifier.lower().startswith("with "):
             continue
-        cleaned = modifier.lower().strip()
-        if cleaned:
-            phrases.append(cleaned)
+        cleaned_mod = _clean_phrase(modifier.lower().strip())
+        if cleaned_mod:
+            phrases.append(cleaned_mod)
 
     deduped = []
     seen = set()
@@ -122,8 +151,10 @@ def rank_grounding_candidates(
         center_y = (candidate.bbox.top + candidate.bbox.bottom) / 2.0
         vertical_score = 1.0
         if profile in {"face_accessory", "head_accessory"}:
-            target_band = 0.22 if profile == "face_accessory" else 0.18
-            vertical_score = max(0.0, 1.0 - abs((center_y / max(1, height)) - target_band) / 0.35)
+            # Only penalise boxes that are implausibly in the very bottom strip of the image.
+            # Do NOT assume a specific vertical band — subjects can be anywhere in frame.
+            relative_y = center_y / max(1, height)
+            vertical_score = 1.0 if relative_y < 0.85 else max(0.0, 1.0 - (relative_y - 0.85) / 0.15)
         horizontal_score = max(0.0, 1.0 - abs((center_x / max(1, width)) - 0.40) / 0.6)
         phrase_bonus = 0.1 if candidate.source == "phrase-grounding" else 0.0
         return 0.52 * candidate.score + 0.24 * size_score + 0.14 * vertical_score + 0.10 * horizontal_score + phrase_bonus
@@ -136,6 +167,12 @@ def refine_bbox_for_profile(
     image_size: tuple[int, int],
     profile: str,
 ) -> BoundingBox:
+    """Size-constrain the Florence-2 bbox for the given profile.
+
+    IMPORTANT: only the *size* of the box is clamped here.  The center is
+    taken directly from the grounding result so we never drag the box away
+    from where Florence-2 detected the object.
+    """
     width, height = image_size
     if candidate is None:
         return fallback_box_for_profile(image_size, profile)
@@ -144,7 +181,7 @@ def refine_bbox_for_profile(
         max_width = max(56, int(width * 0.28))
         max_height = max(28, int(height * 0.14))
         center_x = (candidate.left + candidate.right) // 2
-        center_y = min(int(height * 0.36), (candidate.top + candidate.bottom) // 2)
+        center_y = (candidate.top + candidate.bottom) // 2  # trust Florence-2
         refined_width = min(max_width, max(max_width // 2, candidate.width))
         refined_height = min(max_height, max(max_height // 2, candidate.height))
         return box_from_center(center_x, center_y, refined_width, refined_height, image_size)
@@ -153,7 +190,7 @@ def refine_bbox_for_profile(
         max_width = max(72, int(width * 0.34))
         max_height = max(48, int(height * 0.20))
         center_x = (candidate.left + candidate.right) // 2
-        center_y = min(int(height * 0.24), (candidate.top + candidate.bottom) // 2)
+        center_y = (candidate.top + candidate.bottom) // 2  # trust Florence-2
         refined_width = min(max_width, max(max_width // 2, candidate.width))
         refined_height = min(max_height, max(max_height // 2, candidate.height))
         return box_from_center(center_x, center_y, refined_width, refined_height, image_size)
@@ -179,3 +216,45 @@ def box_from_center(center_x: int, center_y: int, width: int, height: int, image
     right = min(image_width, center_x + half_width)
     bottom = min(image_height, center_y + half_height)
     return BoundingBox(left=left, top=top, right=right, bottom=bottom)
+
+
+def bbox_iou(a: BoundingBox, b: BoundingBox) -> float:
+    ix1 = max(a.left, b.left)
+    iy1 = max(a.top, b.top)
+    ix2 = min(a.right, b.right)
+    iy2 = min(a.bottom, b.bottom)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    union = a.area + b.area - inter
+    return inter / union if union > 0 else 0.0
+
+
+def rerank_with_llm_guidance(
+    candidates: list[GroundingCandidate],
+    guidance_bbox: BoundingBox,
+    image_size: tuple[int, int],
+    profile: str,
+) -> list[GroundingCandidate]:
+    """Re-rank Florence-2 candidates by spatial agreement with the LLM hint.
+
+    Candidates that overlap with the LLM's predicted region get a significant
+    score boost, pushing them above spurious detections elsewhere in the image.
+    """
+    if not candidates:
+        return candidates
+
+    def boosted_score(candidate: GroundingCandidate) -> float:
+        iou = bbox_iou(candidate.bbox, guidance_bbox)
+        # Also compute center distance as a softer signal
+        cx = (candidate.bbox.left + candidate.bbox.right) / 2
+        cy = (candidate.bbox.top + candidate.bbox.bottom) / 2
+        gx = (guidance_bbox.left + guidance_bbox.right) / 2
+        gy = (guidance_bbox.top + guidance_bbox.bottom) / 2
+        w, h = max(1, image_size[0]), max(1, image_size[1])
+        center_dist = ((cx - gx) / w) ** 2 + ((cy - gy) / h) ** 2
+        proximity = max(0.0, 1.0 - center_dist * 4)  # decays with distance
+
+        spatial_agreement = 0.6 * iou + 0.4 * proximity
+        return candidate.score + 0.5 * spatial_agreement  # boost up to +0.5
+
+    return sorted(candidates, key=boosted_score, reverse=True)
+

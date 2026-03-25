@@ -1,157 +1,177 @@
 from __future__ import annotations
 
-import base64
-import io
 from pathlib import Path
 
-from PIL import Image, ImageColor, ImageDraw
+from PIL import Image
 
 from .models import BoundingBox
+from .vision_old import (
+    assess_preview_framing,
+    center_box,
+    crop_box,
+    decode_image_payload,
+    draw_bbox_overlay,
+    encode_png_data_url,
+    ensure_rgb,
+    expand_box,
+    fit_image_inside_canvas,
+    normalized_mean_difference,
+    region_mean_difference,
+    save_png,
+)
 
 
-def ensure_rgb(image: Image.Image) -> Image.Image:
-    if image.mode == "RGB":
-        return image
-    return image.convert("RGB")
+# ---------------------------------------------------------------------------
+# Multi-band Laplacian Pyramid Blending  (Burt & Adelson, 1983)
+# ---------------------------------------------------------------------------
+# This is the "Gaussian blending" technique referenced in the Agent Banana
+# paper (Section 2.4, Image Layer Decomposition).  It blends at multiple
+# frequency bands so that:
+#   - Low-frequency differences (colour / lighting) are smoothed over a WIDE
+#     area, eliminating visible colour seams.
+#   - High-frequency details (edges / textures) are blended with SHARP
+#     boundaries, preventing ghosting or translucency.
+# ---------------------------------------------------------------------------
 
 
-def decode_image_payload(payload: str) -> Image.Image:
-    if payload.startswith("data:"):
-        _, encoded = payload.split(",", 1)
-    else:
-        encoded = payload
-    image_bytes = base64.b64decode(encoded)
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB")
+def _build_gaussian_pyramid(img, levels):
+    """Build a Gaussian pyramid by repeatedly downsampling."""
+    import cv2
+    pyramid = [img.astype("float32")]
+    for _ in range(levels):
+        img = cv2.pyrDown(img)
+        pyramid.append(img.astype("float32"))
+    return pyramid
 
 
-def encode_png_data_url(image: Image.Image) -> str:
-    buffer = io.BytesIO()
-    ensure_rgb(image).save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+def _build_laplacian_pyramid(gauss_pyr):
+    """Build a Laplacian pyramid from a Gaussian pyramid."""
+    import cv2
+    lap_pyr = []
+    for i in range(len(gauss_pyr) - 1):
+        h, w = gauss_pyr[i].shape[:2]
+        expanded = cv2.pyrUp(gauss_pyr[i + 1], dstsize=(w, h))
+        lap = gauss_pyr[i] - expanded
+        lap_pyr.append(lap)
+    lap_pyr.append(gauss_pyr[-1])  # lowest-res residual
+    return lap_pyr
 
 
-def save_png(image: Image.Image, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    ensure_rgb(image).save(path, format="PNG")
+def _reconstruct_from_laplacian(lap_pyr):
+    """Reconstruct an image from its Laplacian pyramid."""
+    import cv2
+    img = lap_pyr[-1]
+    for i in range(len(lap_pyr) - 2, -1, -1):
+        h, w = lap_pyr[i].shape[:2]
+        img = cv2.pyrUp(img, dstsize=(w, h)) + lap_pyr[i]
+    return img
 
 
-def fit_image_inside_canvas(image: Image.Image, canvas_size: tuple[int, int], fill_color: tuple[int, int, int] = (255, 255, 255)) -> Image.Image:
-    image = ensure_rgb(image)
-    canvas_width, canvas_height = canvas_size
-    source_width, source_height = image.size
-    scale = min(canvas_width / max(1, source_width), canvas_height / max(1, source_height))
-    resized_width = max(1, int(source_width * scale))
-    resized_height = max(1, int(source_height * scale))
-    resized = image.resize((resized_width, resized_height))
-    canvas = Image.new("RGB", canvas_size, fill_color)
-    left = (canvas_width - resized_width) // 2
-    top = (canvas_height - resized_height) // 2
-    canvas.paste(resized, (left, top))
-    return canvas
+def _laplacian_blend(source_region, patch, mask_float, levels=4):
+    """Blend patch into source_region using multi-band Laplacian pyramids.
 
+    Args:
+        source_region: (H, W, 3) float32 — the region of the base image
+        patch:         (H, W, 3) float32 — the edited crop, same size
+        mask_float:    (H, W, 1) float32 in [0, 1] — soft blend mask
+        levels:        number of pyramid levels (more = wider low-freq blend)
 
-def expand_box(box: BoundingBox, padding: int, image_size: tuple[int, int]) -> BoundingBox:
-    width, height = image_size
-    return BoundingBox(
-        left=max(0, box.left - padding),
-        top=max(0, box.top - padding),
-        right=min(width, box.right + padding),
-        bottom=min(height, box.bottom + padding),
-    )
+    Returns:
+        (H, W, 3) float32 blended result
+    """
+    # Clamp levels to what the image dimensions can support
+    min_dim = min(source_region.shape[0], source_region.shape[1])
+    max_levels = max(1, int(min_dim).bit_length() - 3)
+    levels = min(levels, max_levels)
 
+    gp_src = _build_gaussian_pyramid(source_region, levels)
+    gp_patch = _build_gaussian_pyramid(patch, levels)
+    gp_mask = _build_gaussian_pyramid(mask_float, levels)
 
-def center_box(image_size: tuple[int, int], scale: float = 0.38) -> BoundingBox:
-    width, height = image_size
-    box_width = max(32, int(width * scale))
-    box_height = max(32, int(height * scale))
-    left = (width - box_width) // 2
-    top = (height - box_height) // 2
-    return BoundingBox(left=left, top=top, right=left + box_width, bottom=top + box_height)
+    lp_src = _build_laplacian_pyramid(gp_src)
+    lp_patch = _build_laplacian_pyramid(gp_patch)
 
+    # Blend each frequency band using the corresponding mask level
+    lp_blended = []
+    for la, lb, gm in zip(lp_src, lp_patch, gp_mask):
+        # Ensure mask broadcasts to 3-channel
+        if gm.ndim == 2:
+            gm = gm[:, :, None]
+        elif gm.shape[2] == 1:
+            pass  # already (H,W,1)
+        blended = la * (1.0 - gm) + lb * gm
+        lp_blended.append(blended)
 
-def region_mean_difference(before: Image.Image, after: Image.Image, box: BoundingBox) -> float:
-    return normalized_mean_difference(before, after, box=box, outside=False)
-
-
-def assess_preview_framing(source: Image.Image, preview: Image.Image, border_fraction: float = 0.08) -> dict:
-    source = ensure_rgb(source)
-    preview = fit_image_inside_canvas(preview, source.size)
-    width, height = source.size
-    border_width = max(4, int(width * border_fraction))
-    border_height = max(4, int(height * border_fraction))
-    left_box = BoundingBox(0, 0, border_width, height)
-    right_box = BoundingBox(width - border_width, 0, width, height)
-    top_box = BoundingBox(0, 0, width, border_height)
-    bottom_box = BoundingBox(0, height - border_height, width, height)
-    left = region_mean_difference(source, preview, left_box)
-    right = region_mean_difference(source, preview, right_box)
-    top = region_mean_difference(source, preview, top_box)
-    bottom = region_mean_difference(source, preview, bottom_box)
-    return {
-        "left": left,
-        "right": right,
-        "top": top,
-        "bottom": bottom,
-        "average": (left + right + top + bottom) / 4.0,
-        "preview": preview,
-    }
-
-
-def crop_box(image: Image.Image, box: BoundingBox) -> Image.Image:
-    return ensure_rgb(image).crop(box.as_tuple())
+    return _reconstruct_from_laplacian(lp_blended)
 
 
 def paste_crop(base_image: Image.Image, crop: Image.Image, box: BoundingBox) -> Image.Image:
-    composite = ensure_rgb(base_image).copy()
-    composite.paste(ensure_rgb(crop).resize((box.width, box.height)), box.as_tuple())
-    return composite
+    """Paste an edited crop back onto the base image using Laplacian pyramid
+    blending — the same 'Gaussian blending' technique described in the Agent
+    Banana paper (Section 2.4).
+
+    Low-frequency colour/lighting differences are smoothed over a wide radius
+    while high-frequency edges and textures remain crisp at the boundary.
+    """
+    import numpy as np
+
+    base = ensure_rgb(base_image)
+    patch = ensure_rgb(crop).resize((box.width, box.height))
+
+    base_np = np.array(base, dtype=np.float32)
+    patch_np = np.array(patch, dtype=np.float32)
+
+    # Extract the region of the base that the patch will replace
+    source_region = base_np[box.top:box.bottom, box.left:box.right].copy()
+
+    # Build a soft mask: 1.0 = fully patch, 0.0 = fully source
+    # Solid interior with a narrow cosine taper at the edges
+    h, w = box.height, box.width
+    taper = 2  # minimal taper: ILD local crop already matches context
+
+    mask = np.ones((h, w, 1), dtype=np.float32)
+
+    # Horizontal taper
+    for i in range(taper):
+        alpha = i / taper
+        mask[:, i, 0] = alpha
+        mask[:, w - 1 - i, 0] = alpha
+    # Vertical taper
+    for i in range(taper):
+        alpha = i / taper
+        mask[i, :, 0] = np.minimum(mask[i, :, 0], alpha)
+        mask[h - 1 - i, :, 0] = np.minimum(mask[h - 1 - i, :, 0], alpha)
+
+    try:
+        # Pyramid levels: ~4-6 depending on patch size
+        levels = max(2, min(6, int(np.log2(min(w, h))) - 2))
+        blended = _laplacian_blend(source_region, patch_np, mask, levels=levels)
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+        print(f"[agent-banana] paste_crop: Laplacian pyramid blend ({levels} levels, {taper}px taper)")
+    except Exception as exc:
+        # Fallback: simple alpha composite
+        print(f"[agent-banana] Laplacian blend failed ({exc}), using alpha fallback")
+        blended = (source_region * (1 - mask) + patch_np * mask)
+        blended = np.clip(blended, 0, 255).astype(np.uint8)
+
+    # Write the blended patch back into the full image
+    result = np.array(base, dtype=np.uint8).copy()
+    result[box.top:box.bottom, box.left:box.right] = blended
+    return Image.fromarray(result)
 
 
-def draw_bbox_overlay(image: Image.Image, box: BoundingBox, label: str = "") -> Image.Image:
-    canvas = ensure_rgb(image).copy().convert("RGBA")
-    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    fill = ImageColor.getrgb("#F59E0B") + (48,)
-    outline = ImageColor.getrgb("#B45309") + (255,)
-    draw.rectangle(box.as_tuple(), fill=fill, outline=outline, width=4)
-    if label:
-        text_box = (box.left + 8, max(4, box.top - 28), box.left + 8 + min(240, len(label) * 9), max(28, box.top - 4))
-        draw.rounded_rectangle(text_box, radius=10, fill=(19, 42, 47, 220))
-        draw.text((text_box[0] + 10, text_box[1] + 7), label[:28], fill=(255, 255, 255, 255))
-    return Image.alpha_composite(canvas, overlay).convert("RGB")
-
-
-def normalized_mean_difference(
-    before: Image.Image,
-    after: Image.Image,
-    *,
-    box: BoundingBox | None = None,
-    outside: bool = False,
-) -> float:
-    before = ensure_rgb(before)
-    after = ensure_rgb(after).resize(before.size)
-    width, height = before.size
-    stride = max(1, min(width, height) // 128)
-    before_pixels = before.load()
-    after_pixels = after.load()
-    total = 0
-    count = 0
-
-    for y in range(0, height, stride):
-        for x in range(0, width, stride):
-            inside_box = False
-            if box is not None:
-                inside_box = box.left <= x < box.right and box.top <= y < box.bottom
-                if outside and inside_box:
-                    continue
-                if not outside and not inside_box:
-                    continue
-            r1, g1, b1 = before_pixels[x, y]
-            r2, g2, b2 = after_pixels[x, y]
-            total += abs(r1 - r2) + abs(g1 - g2) + abs(b1 - b2)
-            count += 3
-
-    if count == 0:
-        return 0.0
-    return total / (count * 255.0)
+__all__ = [
+    "assess_preview_framing",
+    "center_box",
+    "crop_box",
+    "decode_image_payload",
+    "draw_bbox_overlay",
+    "encode_png_data_url",
+    "ensure_rgb",
+    "expand_box",
+    "fit_image_inside_canvas",
+    "normalized_mean_difference",
+    "paste_crop",
+    "region_mean_difference",
+    "save_png",
+]

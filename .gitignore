@@ -6,3 +6,5 @@ artifacts/
 dist/
 build/
 *.egg-info/
+vision_old.py
+nano_banana_old*.py
