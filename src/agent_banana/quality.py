@@ -66,7 +66,7 @@ class QualityJudge:
             notes.append(f"Severe seam detected (score={seam_score:.3f}). Re-blend required.")
 
         accepted = bool(
-            score >= 0.56
+            score >= 0.50
             and inside_change >= 0.02
             and outside_change <= 0.14
             and area_ratio <= max_area_ratio * 1.15

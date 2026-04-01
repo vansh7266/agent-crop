@@ -1,18 +1,18 @@
-"""ReAct Agent Executor — True LLM-driven Thought → Action → Observation loop.
+"""ReAct Agent Executor — True VLM-driven Thought → Action → Observation loop.
 
-The executor uses Gemini as an orchestrator that DECIDES which tool to call
-at each step based on the current state and observations:
+The executor uses Gemini as a VLM orchestrator that SEES the current image
+and bounding box, then DECIDES which tool to call at each step:
 
-1. THINK: LLM analyzes the situation and decides the next action
+1. THINK: VLM analyzes the current image + bbox and decides the next action
 2. ACT: Execute the selected tool from the ToolRegistry
-3. OBSERVE: Feed the result back to the LLM
-4. REPEAT until LLM calls 'finish' or max steps reached
+3. OBSERVE: Feed the result back to the VLM (with updated image)
+4. REPEAT until VLM calls 'finish' or max steps reached
 
 Key design decisions:
 - Each attempt CHAINS on the previous result (not the original)
 - VLM Critic compares the UNTOUCHED original vs the current state
-- The LLM sees all previous steps as scratchpad context
-- On failure to parse LLM output, falls back to a deterministic sequence
+- The VLM sees the current image with bbox overlay + scratchpad context
+- On failure to parse VLM output, falls back to a deterministic sequence
 """
 
 from __future__ import annotations
@@ -89,29 +89,35 @@ class AgentResult:
         }
 
 
-# ─── LLM Orchestrator Prompt ───
+# ─── VLM Orchestrator Prompt ───
 
 _SYSTEM_PROMPT = """\
-You are a ReAct image editing agent. You MUST edit images by choosing tools step-by-step.
+You are a ReAct image editing agent with VISION. You can SEE the current state
+of the image being edited. The attached image shows the current working image
+with a RED bounding box drawn around the target region.
+
+Analyze the image carefully before deciding your next action.
 
 ## State
 - Original image size: {img_w}x{img_h}
 - Target: "{target}" (action: {verb})
 - Bounding box: left={bbox_left}, top={bbox_top}, right={bbox_right}, bottom={bbox_bottom}
 - Instruction: "{instruction}"
-- Attempt: {attempt}/{max_attempts}
+- Attempt: {attempt}/{max_iterations}
 
 ## Available Tools
 {tools_desc}
 
 ## Rules
-1. ALWAYS start with expand_region to add context padding around the bbox
-2. Then crop_local_patch to get the local region
-3. Then edit_local to apply the edit
-4. Then blend_back to merge the edit into the full image
-5. Then evaluate_quality to check the result
-6. If quality is poor or seam is detected, use detect_seam and adjust_taper
-7. Call finish when the edit looks good
+1. LOOK at the attached image — the RED rectangle marks the bounding box region
+2. ALWAYS start with expand_region to add context padding around the bbox
+3. Then crop_local_patch to get the local region
+4. Then edit_local to apply the edit
+5. Then blend_back to merge the edit into the full image
+6. Then evaluate_quality to check the result
+7. If quality is poor or seam is detected, use detect_seam and adjust_taper
+8. Call finish when the edit looks good
+9. Use what you SEE in the image to make better decisions about parameters
 
 ## Previous Steps
 {scratchpad}
@@ -120,7 +126,7 @@ You are a ReAct image editing agent. You MUST edit images by choosing tools step
 Respond with ONLY a JSON object:
 ```json
 {{
-  "thought": "your reasoning about what to do next",
+  "thought": "your reasoning about what to do next based on what you see",
   "action": "tool_name",
   "action_input": {{
     "param1": "value1"
@@ -130,20 +136,106 @@ Respond with ONLY a JSON object:
 """
 
 
-def _call_orchestrator_llm(
+def _image_to_base64(img: Image.Image, fmt: str = "PNG") -> str:
+    """Convert a PIL Image to base64-encoded string."""
+    buf = io.BytesIO()
+    if fmt.upper() == "JPEG":
+        img.convert("RGB").save(buf, format="JPEG", quality=70)
+    else:
+        img.save(buf, format=fmt)
+    return base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+
+def _downscale_for_vlm(img: Image.Image, max_dim: int = 512) -> Image.Image:
+    """Downscale image so the longest side is at most max_dim pixels.
+
+    This dramatically reduces the base64 payload size sent to the VLM,
+    cutting API latency from 30s+ down to a few seconds.
+    """
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img
+    scale = max_dim / max(w, h)
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+    return img.resize((new_w, new_h), Image.LANCZOS)
+
+
+def _draw_bbox_on_image(img: Image.Image, bbox: BoundingBox) -> Image.Image:
+    """Draw a red bounding box rectangle on a copy of the image."""
+    from PIL import ImageDraw
+    annotated = img.copy()
+    draw = ImageDraw.Draw(annotated)
+    # Draw a 3-pixel-wide red rectangle around the bbox
+    for offset in range(3):
+        draw.rectangle(
+            [
+                bbox.left - offset, bbox.top - offset,
+                bbox.right + offset, bbox.bottom + offset,
+            ],
+            outline="red",
+        )
+    return annotated
+
+
+def _call_orchestrator_vlm(
     prompt: str,
+    image: Image.Image,
+    bbox: BoundingBox,
     *,
     api_key: str,
     model: str = DEFAULT_ORCHESTRATOR_MODEL,
     temperature: float = 0.2,
 ) -> str:
-    """Call Gemini for text-only orchestration (no image generation)."""
+    """Call Gemini as a VLM with the current image + bbox overlay for orchestration."""
     url = f"{DEFAULT_API_BASE}/{parse.quote(model, safe='')}:generateContent"
 
+    # Downscale image for faster VLM processing (keeps bbox proportional)
+    orig_w, orig_h = image.size
+    small_image = _downscale_for_vlm(image, max_dim=512)
+    scale_x = small_image.size[0] / orig_w
+    scale_y = small_image.size[1] / orig_h
+
+    # Scale bbox to match the downscaled image
+    scaled_bbox = BoundingBox(
+        left=int(bbox.left * scale_x),
+        top=int(bbox.top * scale_y),
+        right=int(bbox.right * scale_x),
+        bottom=int(bbox.bottom * scale_y),
+    )
+
+    # Draw the bounding box on the downscaled image
+    annotated_image = _draw_bbox_on_image(small_image, scaled_bbox)
+    # Use JPEG for much smaller payload (~50KB vs ~1MB+ for PNG)
+    image_b64 = _image_to_base64(annotated_image, fmt="JPEG")
+
+    # Build multimodal parts: text prompt + annotated image
+    parts = [
+        {"text": prompt},
+        {
+            "inline_data": {
+                "mime_type": "image/jpeg",
+                "data": image_b64,
+            }
+        },
+    ]
+
+    # Force structured JSON output so the VLM returns parseable responses
+    response_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "thought": {"type": "STRING"},
+            "action": {"type": "STRING"},
+            "action_input": {"type": "OBJECT"},
+        },
+        "required": ["thought", "action", "action_input"],
+    }
+
     payload = {
-        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
-            "responseMimeType": "text/plain",
+            "responseMimeType": "application/json",
+            "responseSchema": response_schema,
             "temperature": temperature,
             "maxOutputTokens": 1024,
         },
@@ -159,7 +251,7 @@ def _call_orchestrator_llm(
         method="POST",
     )
 
-    with request.urlopen(req, timeout=30) as resp:
+    with request.urlopen(req, timeout=60) as resp:
         raw = resp.read().decode("utf-8")
 
     data = json.loads(raw)
@@ -207,9 +299,10 @@ def _parse_llm_action(text: str) -> Optional[Dict[str, Any]]:
 class ReActExecutor:
     """ReAct-style agent executor for image editing.
 
-    Uses an LLM (Gemini) to dynamically decide which tool to call at each
-    step, forming a true Thought → Action → Observation loop. Falls back to
-    a deterministic sequence if the LLM fails to produce valid actions.
+    Uses a VLM (Gemini with vision) to dynamically decide which tool to call
+    at each step, seeing the current image state with bounding box overlay.
+    Forms a true Thought → Action → Observation loop. Falls back to a
+    deterministic sequence if the VLM fails to produce valid actions.
 
     Critical design decisions:
     - Each attempt CHAINS on the previous result (not the original)
@@ -223,13 +316,13 @@ class ReActExecutor:
         image_client,
         quality_judge: QualityJudge,
         vlm_critic: Optional[VLMCritic] = None,
-        max_attempts: int = 3,
+        max_iterations: int = 3,
         max_steps_per_attempt: int = 10,
     ):
         self.image_client = image_client
         self.quality_judge = quality_judge
         self.vlm_critic = vlm_critic
-        self.max_attempts = max_attempts
+        self.max_iterations = max_iterations
         self.max_steps_per_attempt = max_steps_per_attempt
         self.api_key = os.environ.get("GEMINI_API_KEY", "")
         self.tool_registry = build_tool_registry()
@@ -244,11 +337,18 @@ class ReActExecutor:
         *,
         target_profile: str = "",
         modifiers: list = None,
+        step_callback=None,
     ) -> AgentResult:
-        """Run the full ReAct agent loop for a single edit step."""
+        """Run the full ReAct agent loop for a single edit step.
+
+        Args:
+            step_callback: Optional callable(AgentStep) invoked after each
+                step completes, enabling real-time streaming to the UI.
+        """
         start_time = time.time()
         all_steps: List[AgentStep] = []
         step_num = 0
+        _emit = step_callback or (lambda s: None)
 
         # UNTOUCHED original — never modified, used for VLM comparison
         untouched_original = original_image.copy()
@@ -258,8 +358,8 @@ class ReActExecutor:
         best_result = None
         best_score = -1.0
 
-        for attempt in range(1, self.max_attempts + 1):
-            # ─── Try LLM-driven ReAct loop for this attempt ───
+        for attempt in range(1, self.max_iterations + 1):
+            # ─── Try VLM-driven ReAct loop for this attempt ───
             attempt_steps, composed, quality, success = self._run_react_attempt(
                 working_image=working_image,
                 untouched_original=untouched_original,
@@ -269,6 +369,7 @@ class ReActExecutor:
                 bbox=current_bbox,
                 attempt=attempt,
                 step_num_offset=step_num,
+                step_callback=step_callback,
             )
 
             step_num += len(attempt_steps)
@@ -308,7 +409,7 @@ class ReActExecutor:
                 quality.semantic_fulfilled = critic_verdict.fulfilled
                 quality.semantic_reasoning = critic_verdict.reasoning
 
-                all_steps.append(AgentStep(
+                critic_step = AgentStep(
                     step_num=step_num,
                     thought=(
                         f"VLM Critic comparing ORIGINAL (untouched) vs "
@@ -322,7 +423,9 @@ class ReActExecutor:
                     observation=critic_verdict.reasoning,
                     critic_verdict=critic_verdict,
                     duration_ms=int((time.time() - t0) * 1000),
-                ))
+                )
+                all_steps.append(critic_step)
+                _emit(critic_step)
 
                 if not critic_verdict.fulfilled:
                     quality.accepted = False
@@ -372,7 +475,7 @@ class ReActExecutor:
             working_image = composed
 
             # ─── Log strategy adjustment for next attempt ───
-            if attempt < self.max_attempts:
+            if attempt < self.max_iterations:
                 step_num += 1
                 suggestion = ""
                 if critic_verdict and critic_verdict.suggestions:
@@ -381,7 +484,7 @@ class ReActExecutor:
                 if critic_verdict and critic_verdict.residual_objects:
                     residuals = ", ".join(critic_verdict.residual_objects)
 
-                all_steps.append(AgentStep(
+                strategy_step = AgentStep(
                     step_num=step_num,
                     thought=(
                         f"Chaining result: using attempt {attempt}'s output as "
@@ -398,22 +501,26 @@ class ReActExecutor:
                         f"Next attempt will edit from the current result image "
                         f"with wider region"
                     ),
-                ))
+                )
+                all_steps.append(strategy_step)
+                _emit(strategy_step)
 
         # ─── Max attempts reached ───
         total_ms = int((time.time() - start_time) * 1000)
         best_image, best_quality = best_result if best_result else (working_image, None)
 
         step_num += 1
-        all_steps.append(AgentStep(
+        final_step = AgentStep(
             step_num=step_num,
-            thought=f"Reached max attempts ({self.max_attempts}). "
+            thought=f"Reached max attempts ({self.max_iterations}). "
                     f"Returning best result (score={best_score:.3f}).",
             action="return_best",
             params={"best_score": round(best_score, 3),
-                    "attempts": self.max_attempts},
-            observation=f"Returning best of {self.max_attempts} attempts",
-        ))
+                    "attempts": self.max_iterations},
+            observation=f"Returning best of {self.max_iterations} attempts",
+        )
+        all_steps.append(final_step)
+        _emit(final_step)
 
         return AgentResult(
             success=False,
@@ -421,7 +528,7 @@ class ReActExecutor:
             final_image_url=encode_png_data_url(best_image),
             quality=best_quality,
             steps=all_steps,
-            total_attempts=self.max_attempts,
+            total_attempts=self.max_iterations,
             total_duration_ms=total_ms,
         )
 
@@ -435,27 +542,30 @@ class ReActExecutor:
         bbox: BoundingBox,
         attempt: int,
         step_num_offset: int,
+        step_callback=None,
     ) -> tuple:
-        """Run a single ReAct attempt with LLM-driven tool selection.
+        """Run a single ReAct attempt with VLM-driven tool selection.
 
         Returns: (steps, composed_image, quality, success)
         """
-        # Try LLM-driven approach first, fall back to deterministic
+        # Try VLM-driven approach first, fall back to deterministic
         if self.api_key:
             try:
-                return self._llm_driven_attempt(
+                return self._vlm_driven_attempt(
                     working_image, untouched_original, instruction,
                     target, verb, bbox, attempt, step_num_offset,
+                    step_callback=step_callback,
                 )
             except Exception as exc:
-                print(f"[react] LLM-driven attempt failed ({exc}), falling back to deterministic")
+                print(f"[react] VLM-driven attempt failed ({exc}), falling back to deterministic")
 
         return self._deterministic_attempt(
             working_image, untouched_original, instruction,
             target, verb, bbox, attempt, step_num_offset,
+            step_callback=step_callback,
         )
 
-    def _llm_driven_attempt(
+    def _vlm_driven_attempt(
         self,
         working_image: Image.Image,
         untouched_original: Image.Image,
@@ -465,11 +575,13 @@ class ReActExecutor:
         bbox: BoundingBox,
         attempt: int,
         step_num_offset: int,
+        step_callback=None,
     ) -> tuple:
-        """LLM-driven ReAct loop: Thought → Action → Observation."""
+        """VLM-driven ReAct loop: See Image → Think → Act → Observe."""
         steps: List[AgentStep] = []
         step_num = step_num_offset
         scratchpad_entries: List[str] = []
+        _emit = step_callback or (lambda s: None)
 
         # State that tools can read and write
         state = {
@@ -483,7 +595,20 @@ class ReActExecutor:
             "quality": None,
         }
 
-        tools_desc = self.tool_registry.tools_prompt()
+        # Only show tools the executor actually handles (exclude ground_target)
+        _executor_tools = {
+            "expand_region", "crop_local_patch", "edit_local",
+            "blend_back", "detect_seam", "adjust_taper",
+            "evaluate_quality", "finish",
+        }
+        all_tools = self.tool_registry.list_tools()
+        filtered_lines = ["Available tools:\n"]
+        for t in all_tools:
+            if t["name"] in _executor_tools:
+                params_str = ", ".join(f"{p['name']}: {p['type']}" for p in t["parameters"])
+                filtered_lines.append(f"  {t['name']}({params_str}) -> {t['returns']}")
+                filtered_lines.append(f"    {t['description']}\n")
+        tools_desc = "\n".join(filtered_lines)
 
         for loop_step in range(self.max_steps_per_attempt):
             step_num += 1
@@ -492,10 +617,14 @@ class ReActExecutor:
             # Build scratchpad from previous steps
             scratchpad = "\n".join(scratchpad_entries) if scratchpad_entries else "(No previous steps)"
 
-            # ─── THINK: Ask LLM what to do next ───
+            # ─── THINK: Ask VLM what to do next (with current image + bbox) ───
+            # Use the current working image (which may have been updated by
+            # previous steps like blend_back)
+            current_image = state.get("composed") or working_image
+
             system_prompt = _SYSTEM_PROMPT.format(
-                img_w=working_image.size[0],
-                img_h=working_image.size[1],
+                img_w=current_image.size[0],
+                img_h=current_image.size[1],
                 target=target,
                 verb=verb,
                 bbox_left=bbox.left,
@@ -504,20 +633,22 @@ class ReActExecutor:
                 bbox_bottom=bbox.bottom,
                 instruction=instruction,
                 attempt=attempt,
-                max_attempts=self.max_attempts,
+                max_iterations=self.max_iterations,
                 tools_desc=tools_desc,
                 scratchpad=scratchpad,
             )
 
-            llm_response = _call_orchestrator_llm(
+            vlm_response = _call_orchestrator_vlm(
                 system_prompt,
+                image=current_image,
+                bbox=bbox,
                 api_key=self.api_key,
             )
 
-            # ─── Parse the LLM's decision ───
-            parsed = _parse_llm_action(llm_response)
+            # ─── Parse the VLM's decision ───
+            parsed = _parse_llm_action(vlm_response)
             if not parsed:
-                print(f"[react] LLM response unparseable at step {loop_step + 1}, "
+                print(f"[react] VLM response unparseable at step {loop_step + 1}, "
                       f"falling back to deterministic")
                 # Fall back to deterministic for remaining steps
                 det_steps, composed, quality, success = self._deterministic_attempt(
@@ -561,7 +692,7 @@ class ReActExecutor:
             elif action_name == "edit_local" and state.get("edited_crop"):
                 image_url = encode_png_data_url(state["edited_crop"])
 
-            steps.append(AgentStep(
+            step_obj = AgentStep(
                 step_num=step_num,
                 thought=thought,
                 action=action_name,
@@ -570,7 +701,9 @@ class ReActExecutor:
                 observation=observation,
                 image_url=image_url,
                 duration_ms=elapsed_ms,
-            ))
+            )
+            steps.append(step_obj)
+            _emit(step_obj)
 
             # Update scratchpad
             scratchpad_entries.append(
@@ -730,11 +863,13 @@ class ReActExecutor:
         bbox: BoundingBox,
         attempt: int,
         step_num_offset: int,
+        step_callback=None,
     ) -> tuple:
         """Deterministic fallback: expand → crop → edit → blend → evaluate."""
         steps: List[AgentStep] = []
         step_num = step_num_offset
         padding_ratio = 0.5 + (attempt - 1) * 0.25
+        _emit = step_callback or (lambda s: None)
 
         # ─── Step 1: Expand region ───
         step_num += 1
@@ -754,10 +889,10 @@ class ReActExecutor:
             edit_region = expand_box(bbox, pad, working_image.size)
             strategy = "local"
 
-        steps.append(AgentStep(
+        s1 = AgentStep(
             step_num=step_num,
             thought=(
-                f"Attempt {attempt}/{self.max_attempts} (deterministic fallback). "
+                f"Attempt {attempt}/{self.max_iterations} (deterministic fallback). "
                 f"Expanding bbox by {int(padding_ratio*100)}% for context."
             ),
             action="expand_region",
@@ -765,21 +900,25 @@ class ReActExecutor:
                     "edit_region": edit_region.to_dict(), "strategy": strategy},
             observation=f"Edit region: {edit_region.width}x{edit_region.height} ({strategy})",
             duration_ms=int((time.time() - t0) * 1000),
-        ))
+        )
+        steps.append(s1)
+        _emit(s1)
 
         # ─── Step 2: Crop ───
         step_num += 1
         t0 = time.time()
         local_crop = crop_box(working_image, edit_region)
 
-        steps.append(AgentStep(
+        s2 = AgentStep(
             step_num=step_num,
             thought="Cropping the expanded region from the working image.",
             action="crop_local_patch",
             params={"crop_size": f"{local_crop.size[0]}x{local_crop.size[1]}"},
             observation=f"Cropped {local_crop.size[0]}x{local_crop.size[1]}",
             duration_ms=int((time.time() - t0) * 1000),
-        ))
+        )
+        steps.append(s2)
+        _emit(s2)
 
         # ─── Step 3: Edit ───
         step_num += 1
@@ -794,31 +933,35 @@ class ReActExecutor:
             )
         except Exception as exc:
             edit_observation = f"Edit failed: {exc}"
-            steps.append(AgentStep(
+            s3_err = AgentStep(
                 step_num=step_num,
                 thought=f"Editing local crop with Gemini",
                 action="edit_local",
                 params={},
                 observation=edit_observation,
                 duration_ms=int((time.time() - t0) * 1000),
-            ))
+            )
+            steps.append(s3_err)
+            _emit(s3_err)
             return steps, working_image, None, False
 
-        steps.append(AgentStep(
+        s3 = AgentStep(
             step_num=step_num,
             thought=f"Editing local crop with Gemini (attempt {attempt})",
             action="edit_local",
             params={"prompt_preview": prompt[:150]},
             observation=edit_observation,
             duration_ms=int((time.time() - t0) * 1000),
-        ))
+        )
+        steps.append(s3)
+        _emit(s3)
 
         # ─── Step 4: Blend ───
         step_num += 1
         t0 = time.time()
         composed = paste_crop(working_image, edited_crop, edit_region)
 
-        steps.append(AgentStep(
+        s4 = AgentStep(
             step_num=step_num,
             thought="Blending edited crop back into working image.",
             action="blend_back",
@@ -826,7 +969,9 @@ class ReActExecutor:
             observation=f"Blended {edit_region.width}x{edit_region.height} region",
             image_url=encode_png_data_url(composed),
             duration_ms=int((time.time() - t0) * 1000),
-        ))
+        )
+        steps.append(s4)
+        _emit(s4)
 
         # ─── Step 5: Evaluate quality ───
         step_num += 1
@@ -836,7 +981,7 @@ class ReActExecutor:
             preview=composed, target=target, verb=verb,
         )
 
-        steps.append(AgentStep(
+        s5 = AgentStep(
             step_num=step_num,
             thought="Running quality check (comparing against untouched original).",
             action="evaluate_quality",
@@ -844,7 +989,9 @@ class ReActExecutor:
             observation=f"Score={quality.score:.3f}, seam={quality.seam_verdict}, "
                         f"inside_Δ={quality.inside_change:.3f}",
             duration_ms=int((time.time() - t0) * 1000),
-        ))
+        )
+        steps.append(s5)
+        _emit(s5)
 
         return steps, composed, quality, False
 

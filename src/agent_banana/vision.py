@@ -125,9 +125,10 @@ def paste_crop(base_image: Image.Image, crop: Image.Image, box: BoundingBox) -> 
     source_region = base_np[box.top:box.bottom, box.left:box.right].copy()
 
     # Build a soft mask: 1.0 = fully patch, 0.0 = fully source
-    # Solid interior with a narrow cosine taper at the edges
+    # Solid interior with a proportional cosine taper at the edges
     h, w = box.height, box.width
-    taper = 2  # minimal taper: ILD local crop already matches context
+    # Dynamic taper: 5% of smaller dimension, clamped [8, 40]px
+    taper = max(8, min(40, int(min(h, w) * 0.05)))
 
     mask = np.ones((h, w, 1), dtype=np.float32)
 

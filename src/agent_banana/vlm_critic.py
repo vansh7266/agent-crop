@@ -260,4 +260,285 @@ class VLMCritic:
         )
 
 
-__all__ = ["VLMCritic", "CriticVerdict"]
+class OllamaVLMCritic:
+    """Uses Ollama locally as a VLM to verify edits semantically.
+
+    Compatible with llama3.2-vision or llava models running via Ollama.
+    """
+
+    def __init__(self, model: str = "llama3.2-vision", host: str = "http://localhost:11434"):
+        self.model = model
+        self.host = host.rstrip("/")
+
+    def verify_edit(
+        self,
+        original: Image.Image,
+        result: Image.Image,
+        instruction: str,
+        target: str,
+        verb: str = "remove",
+    ) -> CriticVerdict:
+        """Verify the edit by querying a local Ollama vision model."""
+        orig_b64 = _image_to_base64(original)
+        result_b64 = _image_to_base64(result)
+
+        prompt_text = (
+            f"You are a strict image editing judge. "
+            f"Image 1 is the ORIGINAL. Image 2 is the RESULT. "
+            f"Instruction: '{instruction}'. Target: '{target}'. Action: '{verb}'. "
+            f"Count ALL instances of '{target}' in the original, and check if EACH one "
+            f"was edited in the result. If the instruction says all/every and ANY is missed, "
+            f"fulfilled must be false and score must be < 0.7. "
+            f"Return ONLY valid JSON matching this structure: "
+            f"{{\"fulfilled\": true/false, \"confidence\": 0.0-1.0, \"semantic_score\": 0.0-1.0, "
+            f"\"reasoning\": \"string\", \"residual_objects\": [\"string\"], \"suggestions\": [\"string\"]}}"
+        )
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": prompt_text,
+                    "images": [orig_b64, result_b64]
+                }
+            ],
+            "format": "json",
+            "stream": False,
+            "options": {
+                "temperature": 0.1
+            }
+        }
+
+        url = f"{self.host}/api/chat"
+        req = request.Request(url, data=json.dumps(payload).encode("utf-8"), method="POST",
+                              headers={"Content-Type": "application/json"})
+
+        try:
+            with request.urlopen(req, timeout=180) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            response_text = data.get("message", {}).get("content", "")
+            print(f"[ollama-vlm] Raw response: {response_text[:500]}")
+            return self._parse_response(response_text, instruction, target)
+        except Exception as exc:
+            print(f"[ollama-vlm] Error: {exc}")
+            return CriticVerdict(
+                fulfilled=False,
+                confidence=0.0,
+                semantic_score=0.3,
+                reasoning=f"Ollama Critic unavailable: {exc}",
+                residual_objects=[],
+                suggestions=["Ollama connection failed — retry or start ollama serve"],
+            )
+
+    def _parse_response(self, text: str, instruction: str, target: str) -> CriticVerdict:
+        try:
+            data = json.loads(text.strip())
+            return self._verdict_from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback 1: Extract JSON block
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                data = json.loads(json_match.group())
+                return self._verdict_from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # Fallback 2: Heuristic extraction
+        score = 0.4
+        score_match = re.search(r'"semantic_score"[\s:]+([\d.]+)', text)
+        if score_match:
+            score = float(score_match.group(1))
+        
+        fulfilled_match = re.search(r'"fulfilled"[\s:]+(true|false)', text, re.IGNORECASE)
+        fulfilled = score >= 0.7
+        if fulfilled_match:
+            fulfilled = fulfilled_match.group(1).lower() == 'true'
+
+        return CriticVerdict(
+            fulfilled=fulfilled,
+            confidence=0.3,
+            semantic_score=score,
+            reasoning=text[:500] if text else "Parse error from Ollama",
+            residual_objects=[],
+            suggestions=["Could not fully parse Ollama json response"],
+        )
+
+    def _verdict_from_dict(self, data: dict) -> CriticVerdict:
+        return CriticVerdict(
+            fulfilled=bool(data.get("fulfilled", False)),
+            confidence=float(data.get("confidence", 0.5)),
+            semantic_score=float(data.get("semantic_score", 0.5)),
+            reasoning=str(data.get("reasoning", "No reasoning provided")),
+            residual_objects=list(data.get("residual_objects", [])),
+            suggestions=list(data.get("suggestions", [])),
+        )
+
+
+class HuggingFaceVLMCritic:
+    """Uses Hugging Face Serverless Inference API as a VLM to verify edits.
+
+    Specifically uses the OpenAI-compatible /v1/chat/completions endpoint
+    for models like meta-llama/Llama-3.2-11B-Vision-Instruct.
+    """
+
+    def __init__(
+        self,
+        api_token: str,
+        model: str = "meta-llama/Llama-3.2-11B-Vision-Instruct",
+    ):
+        self.api_token = api_token
+        self.model = model
+        self.base_url = f"https://router.huggingface.co/hf-inference/models/{self.model}/v1/chat/completions"
+
+    def verify_edit(
+        self,
+        original: Image.Image,
+        result: Image.Image,
+        instruction: str,
+        target: str,
+        verb: str = "remove",
+    ) -> CriticVerdict:
+        """Verify the edit by querying Hugging Face Inference API."""
+        # Convert to lower resolution JPEG for HF payload limits
+        orig_img = original.copy()
+        orig_img.thumbnail((512, 512))
+        res_img = result.copy()
+        res_img.thumbnail((512, 512))
+        
+        orig_b64 = _image_to_base64(orig_img)
+        result_b64 = _image_to_base64(res_img)
+
+        prompt_text = (
+            f"You are a strict image editing judge. "
+            f"Image 1 is the ORIGINAL. Image 2 is the RESULT. "
+            f"Instruction: '{instruction}'. Target: '{target}'. Action: '{verb}'. "
+            f"Count ALL instances of '{target}' in the original, and check if EACH one "
+            f"was edited in the result. If the instruction says all/every and ANY is missed, "
+            f"fulfilled must be false and score must be < 0.7. "
+            f"Return ONLY valid JSON matching this structure exactly (no markdown): "
+            f"{{\"fulfilled\": true, \"confidence\": 0.9, \"semantic_score\": 0.9, "
+            f"\"reasoning\": \"string\", \"residual_objects\": [\"string\"], \"suggestions\": [\"string\"]}}"
+        )
+
+        payload = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt_text},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{orig_b64}"}},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{result_b64}"}}
+                    ]
+                }
+            ],
+            "max_tokens": 500,
+            "temperature": 0.1,
+            "stream": False
+        }
+
+        req = request.Request(
+            self.base_url,
+            data=json.dumps(payload).encode("utf-8"),
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.api_token}",
+            }
+        )
+
+        try:
+            with request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            choices = data.get("choices", [])
+            if not choices:
+                raise ValueError("No choices in response")
+            
+            response_text = choices[0].get("message", {}).get("content", "")
+            print(f"[hf-vlm] Raw response: {response_text[:500]}")
+            return self._parse_response(response_text, instruction, target)
+        except error.HTTPError as e:
+            err_body = e.read().decode('utf-8')
+            print(f"[hf-vlm] API Error: {e.code} - {err_body}")
+            error_msg = f"Hugging Face API Error {e.code}"
+            return self._fallback_error(error_msg)
+        except Exception as exc:
+            print(f"[hf-vlm] Error: {exc}")
+            return self._fallback_error(f"HF Critic unavailable: {exc}")
+
+    def _fallback_error(self, msg: str) -> CriticVerdict:
+        return CriticVerdict(
+            fulfilled=False,
+            confidence=0.0,
+            semantic_score=0.3,
+            reasoning=msg,
+            residual_objects=[],
+            suggestions=["Hugging Face connection failed — check API token and tier"],
+        )
+
+    def _parse_response(self, text: str, instruction: str, target: str) -> CriticVerdict:
+        text = text.strip()
+        
+        # 1. Direct JSON attempt
+        try:
+            data = json.loads(text)
+            return self._verdict_from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 2. Extract JSON block (```json ... ```)
+        try:
+            json_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+            if json_match:
+                data = json.loads(json_match.group(1))
+                return self._verdict_from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 3. Extract any curly braces block
+        try:
+            json_match = re.search(r'\{[\s\S]*\}', text)
+            if json_match:
+                data = json.loads(json_match.group())
+                return self._verdict_from_dict(data)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        # 4. Fallback Regex Heuristic
+        score = 0.4
+        score_match = re.search(r'"semantic_score"[\s:]+([\d.]+)', text)
+        if score_match:
+            score = float(score_match.group(1))
+        
+        fulfilled_match = re.search(r'"fulfilled"[\s:]+(true|false)', text, re.IGNORECASE)
+        fulfilled = score >= 0.7
+        if fulfilled_match:
+            fulfilled = fulfilled_match.group(1).lower() == 'true'
+
+        return CriticVerdict(
+            fulfilled=fulfilled,
+            confidence=0.3,
+            semantic_score=score,
+            reasoning=text[:500] if text else "Parse error from HF VLM",
+            residual_objects=[],
+            suggestions=["Could not firmly parse JSON from HF model response"],
+        )
+
+    def _verdict_from_dict(self, data: dict) -> CriticVerdict:
+        return CriticVerdict(
+            fulfilled=bool(data.get("fulfilled", False)),
+            confidence=float(data.get("confidence", 0.5)),
+            semantic_score=float(data.get("semantic_score", 0.5)),
+            reasoning=str(data.get("reasoning", "No reasoning provided")),
+            residual_objects=list(data.get("residual_objects", [])),
+            suggestions=list(data.get("suggestions", [])),
+        )
+
+
+__all__ = ["VLMCritic", "OllamaVLMCritic", "HuggingFaceVLMCritic", "CriticVerdict"]

@@ -218,13 +218,52 @@ HTML_PAGE = r"""<!doctype html>
 
     /* Hide file input */
     input[type="file"] { display: none; }
+
+    /* Mode toggle */
+    .mode-toggle-section {
+      padding: 12px 16px; border-bottom: 1px solid var(--border);
+    }
+    .mode-toggle-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px;
+    }
+    .mode-label {
+      font-size: 0.75rem; font-weight: 600; color: var(--text-dim);
+      text-transform: uppercase; letter-spacing: 0.05em;
+    }
+    .mode-label.active { color: var(--accent); }
+    .toggle-switch {
+      position: relative; width: 44px; height: 24px;
+      background: var(--border); border-radius: 12px;
+      cursor: pointer; transition: background 0.3s; flex-shrink: 0;
+    }
+    .toggle-switch.active { background: var(--accent); }
+    .toggle-switch .toggle-knob {
+      position: absolute; top: 3px; left: 3px;
+      width: 18px; height: 18px; background: var(--text);
+      border-radius: 50%; transition: transform 0.3s;
+    }
+    .toggle-switch.active .toggle-knob { transform: translateX(20px); }
+    .mode-description {
+      font-size: 0.7rem; color: var(--text-muted); margin-top: 6px; line-height: 1.4;
+    }
+
+    /* Manual mode confirmation cards */
+    .manual-confirm-card {
+      background: var(--bg-agent); border: 1px solid var(--accent);
+      border-radius: var(--radius); padding: 16px; margin-top: 8px; max-width: 500px;
+    }
+    .manual-confirm-card h4 {
+      font-size: 0.82rem; color: var(--accent); font-weight: 600; margin-bottom: 8px;
+    }
+    .confirm-btn-row { display: flex; gap: 8px; margin-top: 10px; }
   </style>
 </head>
 <body>
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <div class="logo">🍌</div>
+      <img src="data:image/jpeg;base64,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" class="logo" />
       <h1>Moleculyst</h1>
     </div>
     <div class="sidebar-section">
@@ -233,16 +272,17 @@ HTML_PAGE = r"""<!doctype html>
       <input type="file" id="sidebarFileInput" accept="image/*">
       <div class="image-list" id="imageList"></div>
     </div>
+    <div class="mode-toggle-section">
+      <div class="mode-toggle-row">
+        <span class="mode-label active" id="autoLabel">Auto</span>
+        <div class="toggle-switch" id="modeToggle" onclick="toggleMode()">
+          <div class="toggle-knob"></div>
+        </div>
+        <span class="mode-label" id="manualLabel">Manual</span>
+      </div>
+      <div class="mode-description" id="modeDesc">Agent runs automatically — grounding, editing, and quality checks happen without interruption.</div>
+    </div>
     <div class="sidebar-tools">
-      <h3>Tools</h3>
-      <div class="tool-item">🔍 ground_target</div>
-      <div class="tool-item">📐 expand_region</div>
-      <div class="tool-item">✂️ crop_local_patch</div>
-      <div class="tool-item">🎨 edit_local</div>
-      <div class="tool-item">🔗 blend_back</div>
-      <div class="tool-item">🔎 detect_seam</div>
-      <div class="tool-item">🔧 adjust_taper</div>
-      <div class="tool-item">📊 evaluate_quality</div>
     </div>
   </div>
 
@@ -255,7 +295,7 @@ HTML_PAGE = r"""<!doctype html>
 
     <div class="chat" id="chat">
       <div class="welcome" id="welcome">
-        <div class="welcome-icon">🍌</div>
+        <img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wgARCADIAMgDASIAAhEBAxEB/8QAHAABAQEAAwEBAQAAAAAAAAAAAAcGAwUIAgQB/8QAGgEBAAMBAQEAAAAAAAAAAAAAAAEDBAIFBv/aAAwDAQACEAMQAAAB9UBIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB+b9KASAAAAAAAAAAy2p6TqjzdYJtUN3y1FM5g+t0aIW/vOFesAAAAAAAATrqihSXfQW/yrB0Unod2Dea8w/TBFoAAAAAAACOWN3lxUd9Gy2/ypZoatru8/T8cjyifVrrOzxfSA6AAAAAAAAleUvnHf5POKPWz2UpjvJ/P6cawAAAAJlRfIffor/DMexNRsMrLT1RN6F5xNdQshiDu99ooYegMjpYYU/wDJPd8d/m4jTjl+8rYCdW+T1hIAEZ+rIRGc36KHm3TWwQH49AiI89nHnbW1wecqJSR5SveyJi/cVAeabhphOqKAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH//EACcQAAIDAAIBAgUFAAAAAAAAAAQFAgMGAQdAABYgITQ2cBAREzA1/9oACAEBAAEFAvwPImqufj6RjNar5/efONY2XQ8Zwt4agEpjgvWMChWF6fsZrFiTRm8sfElHicabvabivYr7JtD7NGWtzAa27wzdnSMZW9AsrbHSZH+sWZzUd4huNJkbTkV0Km66Ss/0mK5VlV6ACwUPRgHW+GQTUJUbdHUO4Y5fGcRqoUagCpez4+XpZZO5d4W6rtlVk67Juf0cJaHNQeIqpu4+XhyjxONVFdHH952+AX6S++AtGV24mtu0e/W50lT2ctPN1GmoygFc/wCWvT7wTLnhdpBnGaDSA5oWjtpfza/1giBRTbxdTmtUPp4ZfUj6oVnsRlD7QPhs2sO3QSxIv7NCIPc9lCJGIPawLAn4Ngmm73bfY2aLIdbi8J9B1IJWbT2csHNyuyLtO6wE+l3Zlq/sJNr2rJlZTB522yWjtguzlo6jEAfQdR/TdOf424zEdOlQ8ndiNN9nGBxPvcFgXqvtfq77L+AVKbDs1J13Un1eRSmr9XageYpucJqN5LsLNkGZavQ7OqvaLXPu4TQ6+wvY5U65oW12T4ZhhuSsUO42gYGEy88umy9esyg2ZPasBevUhqg7YjP+LXA+i30Xoc7s31+tJU5b8lf/xAAkEQACAgIBBAEFAAAAAAAAAAACAwEEABIRBSEwMUEQIkBRYP/aAAgBAwEBPwH8/nyPgpWUB7zp4NGzEev3hnCxky+MrWQsjsPia5aI5ZPGX7ABAGE/d8Yu6y0UJZ6nFrBUahHHifWXZiIPL1ZOkAuOCxHS2iWxFxxjOpOUzQojtgztET4mUd7EP2+h1UsPch7/AMp//8QAHxEAAgICAgMBAAAAAAAAAAAAAQIAEQMxEjAQIVBg/9oACAECAQE/AflrV+5lIKQCzUdCm+pVLamJSbBhxhByEJLb6lcpqYna7Oo2dSKgwqwvrGWk4+A7AUPyn//EAD4QAAEDAgMEBAwEBQUAAAAAAAECAwQAEQUSIRMxQVEUIkBhBhAjMkJxgZGhsdHwIENydDRScLLBU3PC4eL/2gAIAQEABj8C/oPlU6hKuRVr2hS29HFHIk8qKlEqJ3k07FcUVBsXQTwHLs62L5Vb0nkaVtIy8qd6wLp99Lk5wtbptp6NuHiW82PKXCRfhTLbzpebdVlIPf2Ugi4PCnGnL9Ce6w42rKS4gfzKTpQw6D/DjVx3hQeTnccG4uHd2RTKGC8lBspea3upKultJuL2UsAinXlG4vZPcPEuP6Lov7R2VamFt7Far9Y6ikhxouLA1VnIvTjJHVvdB5jxNzVMLcZF05hXSOkJSgbwd49lBtt7rncFC1+yFx5YbQOKqYjsnNFaGZSufP6VchxQ/lKtK2KW0hq1sltKCGUbNtSAq3ijLc89TaSfd2OKsX2KSc3r4U0W75U3znut4wly6Fp81aeFBT8gvpHoBOXshChcHgas22lscki3YBgzzbqXSpKdrpk6w0+dOPOqyNtpKlKPAVIbjMPNbEAna21v7a6KraS5n+iwLkeukxJLL+HPL0T0gdU+2m5chpx1C3NnZq172J/xSVjcoXpqI9GkPuON7QbEDmRz7qYjpw6chTziWwpSRYXNudB+a7lzaIbTqpfqFI6TBlxGV7nlpuKZxFQVKjuqCUlixvcE3+FIcGgUkKqUphpxro68itpbWnn47TjSWl7Mh21RsMlMutdIts5GmzP2aXNlXKEkAJTvUeQqLiEpp5oytWY1htFff+aaiTIcrDVu6IVIT1TUiI7BluFk2K0JGXd66YZbgTfKrCAopFtTbn+HGWmr7ZuMHmwOJSlGnzrDMPjKzYlPWI7w5W3+/T414SR2+uI3UHfYmsRxd+zs9yQUFat40B+N/hUp91I20ay23OI1GlYG88buF1FyeNkrF6Z/QPlWDyGIqprqGLpYRvXqumY0jwakwWV3zSFqNk6fppxmYM7MNkFppe49UH5qvTsSU2HGHBYg1FiREbNhuSnKm5PBXOo/+2n5VjP7msQ/c/8AEUtpIHS2uuwrv5e2oEfEUnoeFI8vf8xff3m3wNYbimFpS7JgKvsFelrfT3VGieE+CGG4lV0LfRdAPPXh76xf9m7/AGGoX6nP7z+GZiSo5EJbGVL3AnKn6VIxUOJUwcxYZA8wn7NeEMqRHLbEly7Sz6XWNSZeAspnYdJOZcU7003ElxE4PhgUFOX85X1qDh+Fxi7sHUWQk7khChSUDwea6ot53/qsNxXDYHS+jsW36Zrq0399MoewBptlSwFrzeaL6nzqj45gignEmRZTZ/MH3pSoCMITh5cGRyQTaw42+zSMG6Up2Q3ZaXnSSM/04UnDhgoXIQnZplX09e+1KafUFynl7R224d1PsR8DDyXXNpdxX/dOrxaCmC8F2ShJ3i2/fWOrlx1MpfeCmybdYXV9aiTMEez7E+UhmwDn1qNBkYQnC46HM7j7irn2ViEVhJW4qK40hPM5CBUWNLaLL6Su6D+o/wBS/wD/xAAoEAEAAQMDAwQCAwEAAAAAAAABEQAhMUFRYXGBkRBAobHB8CBw0fH/2gAIAQEAAT8h/oco44MeHuGXh9yZv4GksSlEq0XBF4cD9PbssJD9HH+d6YjRmxm8LUWJEmh9mvj0LUyESJ1oKCSy0oE29qAY0KwlSijSh0O5h7NfvRisrTIShDuj8Hy1ouuCPcAPaQK63IZhF/ireVdGBNKXirHQcFRTtC3bl76n2rOSCsSuEi9CMwX01YG1JLJkdn0WkajAKb4mHFN+Gi22rxUFdob7U+0zBeaCrWVCRC3+KXNV/wAa9Hi3B29KzQyUkyjHirgjCalSjzC6sL+zGFEwwKLvmhugIME2e8eqm8nuHJTZGkgnrdoAAIDQ9mMS2Qkabut0Y+PYWXdfAgyvOgxRQMIwCV8UsLdAgSWhbUABkSaTiS26XeKRQxAiODZ3I5o4WTaFIulrqMIgCPNCyEqSLC4vdU9wAMCTsvS8pEGVt+RtQolwb1ULx0mnj3pYBchEUBRCBySTQN6GzNyFrIqyBYGSF3pcdeS4tmZNGNTSrYkHz8Sd3oNAvyQhbxMBCOdGtqSAhDZMS5J3iOav1bOrGReVFRW9NuFML/x3h3wi8iBzFRtOFvKCdpr6NJZyXcx/zFRUKFIyU2k6HRgkXImWyMR02pUxzOuR1ifTo/100aKCB+qSxITxpvJykZ1o116QwK2tzsK2KKW5Nk0aj06s2XbpcrX7bZX7HDXzNAIkrbc57YeHSiiCR3SHaB/LUKDGOAAMoM3GumK4p+q2QRPBitP/ACRCfCswsGImcrxTWIhFz+wIOtPY6wQZ7Q7JU6HB3dgkbSwk2yWp8aCpg4WeBATnSoyXjJli6bnmnswSu0opnGQgzKscUNUjrlHYFH1k2AVtbTCocmpF7ePTyWkW3aW1X8DcAm2sRUbFDszHMAgWRjWepSQXM5SAC6xGd1pSnEaRgNONXiGlEbc1mkhP6tRIeHmo4qZ3IXjCRJ2i9CLfFCyMGHC2J0uVKHWV2A+qRqs0UljHD/Zf/9oADAMBAAIAAwAAABAEEEEEEEEEEEEAEEEEEEEEEEEEEEEEEEsEEEEEEEEEEEOsAgEEEEEEEEEO6SMEEEEAEEEFNub0sEEEAEEEEHsHMAEEEEFJq6fYql9ZOgEEHEPONMHIBAAEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEH/8QAJBEAAgIBAwQCAwAAAAAAAAAAAREAITEwQVEQYXGBIKFAUPD/2gAIAQMBAT8Q/PAGgdTJzBXmEYDQoaY95tTFQDPqFQSEUQdIYVGv5QRYgbAut32MOeAdEgIntnBNRLQdtIQOMKoqhoAATLq91u4iQrBXY5xUPjWBzfjj7gQu4elhwAQV4W/FdB4Y8r+xg+/m4yY1CajhYjlqM9B1UUUUUUUAUUUx+2//xAAfEQACAgEEAwAAAAAAAAAAAAABEQAwIRAxQVFAULH/2gAIAQIBAT8Q89WGAnZDU79Qgg5hFVC6Fw4FjmH2cjv7DjJ1GiZYFfKKANxZE5hCKqdLo1WKha/e/wD/xAAmEAEBAAICAgIBBAMBAAAAAAABEQAhMUFRYUBxgRAgcKEwkfCx/9oACAEBAAE/EP4HlN+prxE35Gi/WWVJ9kHuY5IzZblV2vvHVOxQdh6GjxU4h8d6JAqcg+mq9LLD0ZEfYB3tPebUxO3Ha9lr1p5cYe6MbLO4WDqy5R2q8wTA0UU4l1wnxHnXNqCInYmU+PWIFsO0vcinWBFBn/dH1hxbDEUNvmk7lNFUIM3oCIheebLr4jIIEdybCBEq1PG8D5dwGLU1HCYx4htWQvxt8qveRJi3CdRBRvwrXyHv4p42GrRAtLBHc3MQ4QdL6DT0cYQD06Otj3DT7HLC4lQYEVQZQpSW8mEqBGqnC5nTIbGWYBXZEvQgCvRa+PicDuVo8B5XoNuLMfXWUygl1U0q8YFJ6/qtD+2Tosj2AxG93nH4ghVe8cGmuvqGKjOESI+cpk57FRXt5/Pw95RIxrfYCP2d4UZXywJ9lB5j1+qEAURv5Q6SFPWkwv1isfTsnkJ94JY0AgHj4ZJeigeEdOKCSiT5QG/2d/5O17LvMZlQ8GvBceTBEXK9AX8YYgnwA7TbmYOcqVRQYJGg0IwI5xNumSQNa8JfZrBoE4gMpNC5tTOagmAAQf8AeAvYgnQGbNo4TAOgDGhxoGlDgcHowB0rUWUqApUpTPdiQ8IVG+f05LoT6mSpR3dmcSYxwgPveFC4QGK9O13MarUQH1TSDlyP+CVmgdoQ7pR2uPkEWmYBAsEqRHWNN3oqkjcpOgHLBsnhMU3AUgUF2DeFE4vXhAwNlDhxTqzswEOjtLw/tphvjWgDlX2GA3R0tXfh4DN05MLz9el9/wDphIlLHWV3sycgOsDtTQeE5VVwtcjFe+2rjI8oKe1XP+V4Y9A8KKhYgrpcYItYajoGwbDY+sAn9mxM9fk+6hi8tFb8H5VENiCY6V+u5MCo29/oW8Dp+nh1vGYgmzoZXQ5EroPaBYegB4FEZzSzx4hxIkKiEqgZGkQMFpSoL5CwpCkTXMz+w7nEAWyZaPAOzCLMOctq6ic6DyY6rv8AWFCJsbDnJ+glK1KRoPVRoW4o4ZVDYjngZSkAFzEjFJHYrytZsAsgQAX8cAQ9kfQ0BdeTK4qzhAFVReHjBi+LaRFCqCEYgw1eaMdROUUog9o4Hi6WGtFTDC0GKNVoJDLO0oGgUHkGlei1+IBT2gpM4NQScpMkLvznPaHiSnlocnHGDeWSG7QmuWYZs0CKqN0KRPC1Zq9W2O6gOlUlgLkOmTbobCqis5wp37Bb1JsHnv8Akv8A/9k=" style="width: 64px; height: 64px; border-radius: 8px; object-fit: contain;">
         <h2>Moleculyst Studio</h2>
         <p>Upload an image and describe what you'd like to edit. I'll show you my reasoning at every step.</p>
       </div>
@@ -285,6 +325,27 @@ HTML_PAGE = r"""<!doctype html>
   var _running = false;
   var _iterCount = 0;
   var _aborted = false;
+  var _mode = "auto";  // "auto" or "manual"
+
+  function toggleMode() {
+    var toggle = document.getElementById("modeToggle");
+    var autoLabel = document.getElementById("autoLabel");
+    var manualLabel = document.getElementById("manualLabel");
+    var modeDesc = document.getElementById("modeDesc");
+    if (_mode === "auto") {
+      _mode = "manual";
+      toggle.classList.add("active");
+      autoLabel.classList.remove("active");
+      manualLabel.classList.add("active");
+      modeDesc.textContent = "You confirm or adjust the bounding box for each target before the edit runs.";
+    } else {
+      _mode = "auto";
+      toggle.classList.remove("active");
+      autoLabel.classList.add("active");
+      manualLabel.classList.remove("active");
+      modeDesc.textContent = "Agent runs automatically \u2014 grounding, editing, and quality checks happen without interruption.";
+    }
+  }
 
   function esc(s) { var d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
@@ -303,7 +364,7 @@ HTML_PAGE = r"""<!doctype html>
   }
 
   function addAgentMsg(text, extra) {
-    var html = '<div class="msg agent"><div class="msg-avatar">🍌</div><div class="msg-body">' +
+    var html = '<div class="msg agent"><div class="msg-avatar">⚛️</div><div class="msg-body">' +
       '<div class="msg-sender">Moleculyst</div><div class="msg-bubble">' + text + '</div>';
     if (extra) html += extra;
     html += '</div></div>';
@@ -329,7 +390,7 @@ HTML_PAGE = r"""<!doctype html>
   }
 
   function addTyping() {
-    var html = '<div class="msg agent" id="typingIndicator"><div class="msg-avatar">🍌</div><div class="msg-body"><div class="typing"><span></span><span></span><span></span></div></div></div>';
+    var html = '<div class="msg agent" id="typingIndicator"><div class="msg-avatar">⚛️</div><div class="msg-body"><div class="typing"><span></span><span></span><span></span></div></div></div>';
     chat.insertAdjacentHTML("beforeend", html);
     scrollToBottom();
   }
@@ -423,7 +484,50 @@ HTML_PAGE = r"""<!doctype html>
     this.style.height = Math.min(this.scrollHeight, 120) + "px";
   });
 
+  function renderAgentStep(step) {
+    var actionIcon = {
+      "expand_region": "\ud83d\udcd0", "crop_local_patch": "\u2702\ufe0f",
+      "edit_local": "\ud83c\udfa8", "blend_back": "\ud83d\udd17",
+      "evaluate_quality": "\ud83d\udcca", "verify_semantic": "\ud83e\udde0",
+      "adjust_strategy": "\ud83d\udd27", "return_best": "\ud83c\udfc1", "finish": "\u2705"
+    }[step.action] || "\u2699\ufe0f";
+
+    var detail = '<div style="font-size:0.82rem;color:var(--text-dim);margin-top:2px">\ud83d\udcad ' + esc(step.thought) + '</div>';
+    detail += '<div style="font-size:0.82rem;margin-top:2px">\ud83d\udc41 ' + esc(step.observation) + '</div>';
+
+    if (step.critic_verdict) {
+      var cv = step.critic_verdict;
+      var cvColor = cv.fulfilled ? "var(--green)" : "var(--red)";
+      detail += '<div style="margin-top:4px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:6px;border-left:3px solid ' + cvColor + '">';
+      detail += '<strong style="color:' + cvColor + '">' + (cv.fulfilled ? "\u2713 Approved" : "\u2717 Rejected") + '</strong>';
+      detail += ' (score: ' + (cv.semantic_score||0).toFixed(2) + ')';
+      detail += '<div style="font-size:0.78rem;color:var(--text-dim);margin-top:2px">' + esc(cv.reasoning) + '</div>';
+      if (cv.residual_objects && cv.residual_objects.length) {
+        detail += '<div style="font-size:0.78rem;color:var(--red);margin-top:2px">Still visible: ' + cv.residual_objects.map(esc).join(", ") + '</div>';
+      }
+      if (cv.suggestions && cv.suggestions.length) {
+        detail += '<div style="font-size:0.78rem;color:var(--amber);margin-top:2px">\ud83d\udca1 ' + cv.suggestions.map(esc).join("; ") + '</div>';
+      }
+      detail += '</div>';
+    }
+
+    if (step.image_url) {
+      detail += '<div style="margin-top:6px"><img src="' + step.image_url + '" style="max-width:300px;border-radius:8px;border:1px solid var(--border)"></div>';
+    }
+
+    var durationStr = step.duration_ms ? " (" + (step.duration_ms/1000).toFixed(1) + "s)" : "";
+    addToolMsg(step.action, actionIcon + " " + step.action + durationStr, detail);
+  }
+
   function handleSend() {
+    if (_mode === "manual") {
+      handleManualSend();
+    } else {
+      handleAutoSend();
+    }
+  }
+
+  function handleAutoSend() {
     var text = userInput.value.trim();
     if (!text || _running) return;
     if (!_sourcePayload) {
@@ -438,8 +542,43 @@ HTML_PAGE = r"""<!doctype html>
     setRunning(true);
     addTyping();
 
-    // Call the edit API
-    fetch("/api/edit", {
+    // Use SSE streaming endpoint for real-time step rendering
+    fetch("/api/edit-stream", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({ image: _sourcePayload, instruction: text })
+    })
+    .then(function(response) {
+      if (!response.ok) {
+        return response.json().then(function(err) { throw new Error(err.error || "Request failed"); });
+      }
+      removeTyping();
+      return readSSEStream(response, text);
+    })
+    .catch(function(err) {
+      removeTyping();
+      addErrorMsg(err.message);
+      setRunning(false);
+    });
+  }
+
+  function handleManualSend() {
+    var text = userInput.value.trim();
+    if (!text || _running) return;
+    if (!_sourcePayload) {
+      addAgentMsg("Please upload an image first using the 📎 button.");
+      return;
+    }
+    userInput.value = "";
+    userInput.style.height = "36px";
+    _aborted = false;
+
+    addUserMsg(text);
+    setRunning(true);
+    addTyping();
+
+    // Step 1: Ground targets — find bboxes for each target
+    fetch("/api/ground", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({ image: _sourcePayload, instruction: text })
@@ -447,92 +586,250 @@ HTML_PAGE = r"""<!doctype html>
     .then(function(r) { return r.json(); })
     .then(function(data) {
       removeTyping();
-      if (_aborted) return;
+      if (_aborted) { setRunning(false); return; }
       if (data.error) { addErrorMsg(data.error); setRunning(false); return; }
 
-      var steps = data.step_results || [];
-      steps.forEach(function(sr, idx) {
-        // Grounding narration
-        var groundingText = "I'm looking for <strong>" + esc(sr.step.target) + "</strong>";
-        if (sr.grounding_phrases && sr.grounding_phrases.length) {
-          groundingText += " using phrases: " + sr.grounding_phrases.map(function(p) { return '"' + esc(p) + '"'; }).join(", ");
-        }
-        if (sr.llm_confidence > 0) {
-          groundingText += "<br>LLM confidence: <strong>" + sr.llm_confidence.toFixed(2) + "</strong>";
-        }
-        if (sr.llm_object_description) {
-          groundingText += "<br>Context: " + esc(sr.llm_object_description);
-        }
-        addToolMsg("ground_target", "Finding the target object", groundingText);
+      var targets = data.targets || [];
+      if (targets.length === 0) {
+        addErrorMsg("No targets found in instruction.");
+        setRunning(false);
+        return;
+      }
 
-        // Agent reasoning trace
-        var agentSteps = sr.agent_steps || [];
-        if (agentSteps.length > 0) {
-          agentSteps.forEach(function(as) {
-            var actionIcon = {
-              "expand_region": "📐", "crop_local_patch": "✂️",
-              "edit_local": "🎨", "blend_back": "��",
-              "evaluate_quality": "📊", "verify_semantic": "🧠",
-              "adjust_strategy": "🔧", "return_best": "🏁"
-            }[as.action] || "⚙️";
+      addAgentMsg("🔍 <strong>Manual Mode</strong> — I found " + targets.length + " target(s). Please review and adjust the bounding boxes below, then click <strong>Confirm & Edit</strong>.");
 
-            var detail = '<div style="font-size:0.82rem;color:var(--text-dim);margin-top:2px">💭 ' + esc(as.thought) + '</div>';
-            detail += '<div style="font-size:0.82rem;margin-top:2px">👁 ' + esc(as.observation) + '</div>';
+      // Create bbox editors for each target, store references
+      var confirmedBboxes = [];
+      var editorsContainer = document.createElement("div");
+      editorsContainer.style.cssText = "display:flex;flex-direction:column;gap:12px;";
 
-            if (as.critic_verdict) {
-              var cv = as.critic_verdict;
-              var cvColor = cv.fulfilled ? "var(--green)" : "var(--red)";
-              detail += '<div style="margin-top:4px;padding:6px 10px;background:rgba(0,0,0,0.2);border-radius:6px;border-left:3px solid ' + cvColor + '">';
-              detail += '<strong style="color:' + cvColor + '">' + (cv.fulfilled ? "✓ Approved" : "✗ Rejected") + '</strong>';
-              detail += ' (score: ' + (cv.semantic_score||0).toFixed(2) + ')';
-              detail += '<div style="font-size:0.78rem;color:var(--text-dim);margin-top:2px">' + esc(cv.reasoning) + '</div>';
-              if (cv.residual_objects && cv.residual_objects.length) {
-                detail += '<div style="font-size:0.78rem;color:var(--red);margin-top:2px">Still visible: ' + cv.residual_objects.map(esc).join(", ") + '</div>';
+      targets.forEach(function(t, idx) {
+        confirmedBboxes.push(Object.assign({}, t.bbox));
+
+        var card = document.createElement("div");
+        card.className = "manual-confirm-card";
+        card.innerHTML =
+          '<h4>Target ' + (idx+1) + ': ' + esc(t.target) + '</h4>' +
+          '<div style="font-size:0.8rem;color:var(--text-dim);margin-bottom:6px">' + esc(t.prompt) + '</div>' +
+          '<div class="bbox-editor-wrap" id="manual-wrap-' + idx + '">' +
+            '<img id="manual-img-' + idx + '" src="' + t.overlay_data_url + '" style="max-width:100%;border-radius:8px;display:block">' +
+            '<canvas id="manual-cvs-' + idx + '" style="position:absolute;top:0;left:0;cursor:crosshair"></canvas>' +
+          '</div>' +
+          '<div style="margin-top:6px">' +
+            '<span class="bbox-coords" id="manual-coords-' + idx + '">[' + t.bbox.left + ',' + t.bbox.top + '] → [' + t.bbox.right + ',' + t.bbox.bottom + '] (' + (t.bbox.right-t.bbox.left) + '×' + (t.bbox.bottom-t.bbox.top) + 'px)</span>' +
+          '</div>';
+        editorsContainer.appendChild(card);
+
+        // Wire up bbox drawing on this card's canvas
+        (function(tIdx, tData) {
+          setTimeout(function() {
+            var img = document.getElementById("manual-img-" + tIdx);
+            var cvs = document.getElementById("manual-cvs-" + tIdx);
+            var coords = document.getElementById("manual-coords-" + tIdx);
+            if (!img || !cvs) return;
+
+            cvs.width = img.offsetWidth;
+            cvs.height = img.offsetHeight;
+            var ctx = cvs.getContext("2d");
+            var scaleX = img.offsetWidth / tData.image_width;
+            var scaleY = img.offsetHeight / tData.image_height;
+
+            // Draw initial bbox
+            ctx.strokeStyle = "rgba(88,166,255,0.8)";
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6,3]);
+            var bx = tData.bbox;
+            ctx.strokeRect(bx.left*scaleX, bx.top*scaleY, (bx.right-bx.left)*scaleX, (bx.bottom-bx.top)*scaleY);
+
+            var drawing = false, startX, startY;
+            cvs.addEventListener("mousedown", function(e) {
+              drawing = true;
+              var rect = cvs.getBoundingClientRect();
+              startX = e.clientX - rect.left;
+              startY = e.clientY - rect.top;
+            });
+            cvs.addEventListener("mousemove", function(e) {
+              if (!drawing) return;
+              var rect = cvs.getBoundingClientRect();
+              var cx = e.clientX - rect.left;
+              var cy = e.clientY - rect.top;
+              ctx.clearRect(0,0,cvs.width,cvs.height);
+              ctx.strokeStyle = "rgba(88,166,255,0.8)";
+              ctx.lineWidth = 2;
+              ctx.setLineDash([6,3]);
+              ctx.strokeRect(startX, startY, cx-startX, cy-startY);
+            });
+            cvs.addEventListener("mouseup", function(e) {
+              if (!drawing) return;
+              drawing = false;
+              var rect = cvs.getBoundingClientRect();
+              var cx = e.clientX - rect.left;
+              var cy = e.clientY - rect.top;
+              var l = Math.round(Math.min(startX, cx) / scaleX);
+              var t2 = Math.round(Math.min(startY, cy) / scaleY);
+              var r = Math.round(Math.max(startX, cx) / scaleX);
+              var b = Math.round(Math.max(startY, cy) / scaleY);
+              l = Math.max(0, l); t2 = Math.max(0, t2);
+              r = Math.min(tData.image_width, r); b = Math.min(tData.image_height, b);
+              if (r - l > 5 && b - t2 > 5) {
+                confirmedBboxes[tIdx] = {left: l, top: t2, right: r, bottom: b};
+                coords.textContent = "[" + l + "," + t2 + "] → [" + r + "," + b + "] (" + (r-l) + "×" + (b-t2) + "px)";
               }
-              if (cv.suggestions && cv.suggestions.length) {
-                detail += '<div style="font-size:0.78rem;color:var(--amber);margin-top:2px">💡 ' + cv.suggestions.map(esc).join("; ") + '</div>';
-              }
-              detail += '</div>';
-            }
-
-            if (as.image_url) {
-              detail += '<div style="margin-top:6px"><img src="' + as.image_url + '" style="max-width:300px;border-radius:8px;border:1px solid var(--border)"></div>';
-            }
-
-            var durationStr = as.duration_ms ? " (" + (as.duration_ms/1000).toFixed(1) + "s)" : "";
-            addToolMsg(as.action, actionIcon + " " + as.action + durationStr, detail);
-          });
-        }
-
-        // Summary with quality metrics
-        var metrics = addMetrics(sr.quality);
-        var notes = (sr.quality.notes || []).map(function(n) { return '<div style="font-size:0.8rem;color:var(--text-dim);margin-top:4px">📝 ' + esc(n) + '</div>'; }).join("");
-        var attemptsTag = sr.attempts > 1 ? " (" + sr.attempts + " attempts)" : "";
-
-        addAgentMsg("✅ Step " + (idx+1) + " complete" + attemptsTag + " — <strong>" + esc(sr.step.prompt) + "</strong>", metrics + notes);
+            });
+          }, 100);
+        })(idx, t);
       });
 
-      // Show final composed image FIRST (prominently)
-      if (data.final_image) {
-        addAgentMsg("🎨 <strong>Here is your edited image:</strong>",
-          '<div class="chat-images"><div><img src="' + data.final_image + '" style="max-width:500px;border-radius:12px"><div class="img-label">Final Result</div></div></div>');
-        _sourcePayload = data.final_image;
-        addToSidebar(data.final_image);
-      }
+      // Add confirm/cancel buttons via DOM API (no hardcoded IDs)
+      var btnRow = document.createElement("div");
+      btnRow.className = "confirm-btn-row";
+      var confirmBtn = document.createElement("button");
+      confirmBtn.className = "btn btn-green";
+      confirmBtn.textContent = "Confirm & Edit";
+      var cancelBtn = document.createElement("button");
+      cancelBtn.className = "btn btn-red";
+      cancelBtn.textContent = "Cancel";
+      btnRow.appendChild(confirmBtn);
+      btnRow.appendChild(cancelBtn);
+      editorsContainer.appendChild(btnRow);
 
-      // THEN show bbox editor for further refinement
-      var lastSr = steps[steps.length - 1];
-      if (lastSr && data.final_image) {
-        addAgentMsg("Want to refine? Draw a bounding box below and re-compose:");
-        createBboxEditor(data.final_image, lastSr.bbox, lastSr.image_width || 512, lastSr.image_height || 512, 0, lastSr);
-      }
-      setRunning(false);
+      var msgDiv = document.createElement("div");
+      msgDiv.className = "msg agent";
+      var msgBody = document.createElement("div");
+      msgBody.className = "msg-body";
+      var msgSender = document.createElement("div");
+      msgSender.className = "msg-sender";
+      msgSender.textContent = "Moleculyst";
+      var msgAvatar = document.createElement("div");
+      msgAvatar.className = "msg-avatar";
+      msgAvatar.textContent = "⚛️";
+      msgBody.appendChild(msgSender);
+      msgBody.appendChild(editorsContainer);
+      msgDiv.appendChild(msgAvatar);
+      msgDiv.appendChild(msgBody);
+      chat.appendChild(msgDiv);
+      scrollToBottom();
+
+      // Wire confirm button directly
+      confirmBtn.addEventListener("click", function() {
+        confirmBtn.disabled = true;
+        confirmBtn.textContent = "Editing...";
+        cancelBtn.disabled = true;
+        addTyping();
+        fetch("/api/edit-manual-stream", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            image: _sourcePayload,
+            instruction: text,
+            bboxes: confirmedBboxes
+          })
+        })
+        .then(function(response) {
+          if (!response.ok) {
+            return response.json().then(function(err) { throw new Error(err.error || "Request failed"); });
+          }
+          removeTyping();
+          return readSSEStream(response, text);
+        })
+        .catch(function(err) {
+          removeTyping();
+          addErrorMsg(err.message);
+          setRunning(false);
+        });
+      });
+
+      cancelBtn.addEventListener("click", function() {
+        addAgentMsg("Edit cancelled.");
+        confirmBtn.disabled = true;
+        cancelBtn.disabled = true;
+        setRunning(false);
+      });
     })
     .catch(function(err) {
       removeTyping();
       addErrorMsg(err.message);
       setRunning(false);
     });
+  }
+
+  // Shared SSE stream reader used by both auto and manual modes
+  function readSSEStream(response, instructionText) {
+    var reader = response.body.getReader();
+    var decoder = new TextDecoder();
+    var buffer = "";
+    var eventType = "message";  // Persists across processStream() calls
+
+    function processStream() {
+      return reader.read().then(function(result) {
+        if (result.done || _aborted) {
+          setRunning(false);
+          return;
+        }
+
+        buffer += decoder.decode(result.value, {stream: true});
+        var lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i];
+          if (line.startsWith("event: ")) {
+            eventType = line.substring(7).trim();
+          } else if (line.startsWith("data: ")) {
+            var jsonStr = line.substring(6);
+            try {
+              var data = JSON.parse(jsonStr);
+
+              if (eventType === "error") {
+                addErrorMsg(data.error || "Unknown error");
+                setRunning(false);
+                return;
+              }
+
+              if (eventType === "done") {
+                var steps = data.step_results || [];
+                steps.forEach(function(sr, idx) {
+                  var groundingText = "I'm looking for <strong>" + esc(sr.step.target) + "</strong>";
+                  if (sr.grounding_phrases && sr.grounding_phrases.length) {
+                    groundingText += " using phrases: " + sr.grounding_phrases.map(function(p) { return '"' + esc(p) + '"'; }).join(", ");
+                  }
+                  if (sr.llm_confidence > 0) {
+                    groundingText += "<br>LLM confidence: <strong>" + sr.llm_confidence.toFixed(2) + "</strong>";
+                  }
+                  addToolMsg("ground_target", "Finding the target object", groundingText);
+                  var metrics = addMetrics(sr.quality);
+                  var notes = (sr.quality.notes || []).map(function(n) {
+                    return '<div style="font-size:0.8rem;color:var(--text-dim);margin-top:4px">📝 ' + esc(n) + '</div>';
+                  }).join("");
+                  var attemptsTag = sr.attempts > 1 ? " (" + sr.attempts + " attempts)" : "";
+                  addAgentMsg("✅ Step " + (idx+1) + " complete" + attemptsTag + " — <strong>" + esc(sr.step.prompt) + "</strong>", metrics + notes);
+                });
+
+                if (data.final_image) {
+                  addAgentMsg("🎨 <strong>Here is your edited image:</strong>",
+                    '<div class="chat-images"><div><img src="' + data.final_image + '" style="max-width:500px;border-radius:12px"><div class="img-label">Final Result</div></div></div>');
+                  _sourcePayload = data.final_image;
+                  addToSidebar(data.final_image);
+                }
+
+                var lastSr = steps[steps.length - 1];
+                if (lastSr && data.final_image) {
+                  addAgentMsg("Want to refine? Draw a bounding box below and re-compose:");
+                  createBboxEditor(data.final_image, lastSr.bbox, lastSr.image_width || 512, lastSr.image_height || 512, 0, lastSr);
+                }
+                setRunning(false);
+              } else {
+                renderAgentStep(data);
+              }
+            } catch (e) {
+              // Ignore parse errors from incomplete JSON
+            }
+            eventType = "message";
+          }
+        }
+        return processStream();
+      });
+    }
+    return processStream();
   }
 
   /* ── BBox Editor ── */
@@ -696,7 +993,102 @@ def make_handler(app: AgentBananaApp) -> Callable[..., BaseHTTPRequestHandler]:
                 self._send_json(400, {"error": "Invalid JSON payload"})
                 return
 
-            if self.path == "/api/edit":
+            if self.path == "/api/edit-stream":
+                # SSE streaming endpoint — sends each agent step as it completes
+                instruction = str(payload.get("instruction", "")).strip()
+                image_payload = str(payload.get("image", "")).strip()
+                session_id = payload.get("session_id") or None
+                if not instruction:
+                    self._send_json(400, {"error": "Instruction is required"})
+                    return
+                if not image_payload:
+                    self._send_json(400, {"error": "Image payload is required"})
+                    return
+
+                # Set up SSE response headers
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+
+                def send_step(step):
+                    """Emit a single agent step as an SSE event."""
+                    try:
+                        step_data = step.to_dict()
+                        event_str = f"data: {json.dumps(step_data)}\n\n"
+                        self.wfile.write(event_str.encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass  # Client may have disconnected
+
+                try:
+                    image = decode_image_payload(image_payload)
+                    result = app.run(image, instruction, session_id=session_id,
+                                     step_callback=send_step)
+                    # Send final result as a 'done' event
+                    done_str = f"event: done\ndata: {json.dumps(result.to_dict())}\n\n"
+                    self.wfile.write(done_str.encode("utf-8"))
+                    self.wfile.flush()
+                except Exception as exc:
+                    err_str = f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+                    self.wfile.write(err_str.encode("utf-8"))
+                    self.wfile.flush()
+
+            elif self.path == "/api/ground":
+                # Manual mode step 1: parse instruction + ground targets
+                instruction = str(payload.get("instruction", "")).strip()
+                image_payload = str(payload.get("image", "")).strip()
+                if not instruction or not image_payload:
+                    self._send_json(400, {"error": "instruction and image are required"})
+                    return
+                try:
+                    image = decode_image_payload(image_payload)
+                    result = app.ground_targets(image, instruction)
+                except Exception as exc:
+                    self._send_json(500, {"error": str(exc)})
+                    return
+                self._send_json(200, result)
+
+            elif self.path == "/api/edit-manual-stream":
+                # Manual mode step 2: run edits with user-confirmed bboxes (SSE)
+                instruction = str(payload.get("instruction", "")).strip()
+                image_payload = str(payload.get("image", "")).strip()
+                confirmed_bboxes = payload.get("bboxes", [])
+                session_id = payload.get("session_id") or None
+                if not instruction or not image_payload:
+                    self._send_json(400, {"error": "instruction and image are required"})
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+
+                def send_step_manual(step):
+                    try:
+                        event_str = f"data: {json.dumps(step.to_dict())}\n\n"
+                        self.wfile.write(event_str.encode("utf-8"))
+                        self.wfile.flush()
+                    except Exception:
+                        pass
+
+                try:
+                    image = decode_image_payload(image_payload)
+                    result = app.run_with_bboxes(
+                        image, instruction, confirmed_bboxes,
+                        session_id=session_id, step_callback=send_step_manual,
+                    )
+                    done_str = f"event: done\ndata: {json.dumps(result.to_dict())}\n\n"
+                    self.wfile.write(done_str.encode("utf-8"))
+                    self.wfile.flush()
+                except Exception as exc:
+                    err_str = f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+                    self.wfile.write(err_str.encode("utf-8"))
+                    self.wfile.flush()
+
+            elif self.path == "/api/edit":
                 instruction = str(payload.get("instruction", "")).strip()
                 image_payload = str(payload.get("image", "")).strip()
                 session_id = payload.get("session_id") or None
