@@ -9,4 +9,7 @@ build/
 vision_old.py
 nano_banana_old*.py
 .venv/
+.venv-win/
 .DS_Store
+*.log
+node_modules/
